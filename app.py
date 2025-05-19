@@ -9,7 +9,7 @@ load_dotenv()
 API_KEY = os.getenv("SERPAPI_KEY")
 
 # --- Streamlit UI ---
-st.title("🔍 AI Job Finder")
+st.title("🔍Job Finder")
 st.write("Find jobs from Google Jobs in seconds!")
 
 # User inputs

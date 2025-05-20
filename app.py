@@ -7,6 +7,34 @@ import time
 import traceback
 import folium
 from streamlit_folium import folium_static
+from geopy.geocoders import Nominatim
+from geopy.extra.rate_limiter import RateLimiter
+import json
+from pathlib import Path
+import base64
+import tempfile
+from datetime import datetime
+import pytz
+import re
+from PyPDF2 import PdfReader, PdfWriter
+from transformers import pipeline
+from huggingface_hub import InferenceClient
+from io import BytesIO
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from transformers import pipeline
+from huggingface_hub import InferenceClient
+from dotenv import load_dotenv
+from saved_jobs import SavedJobsManager
+
+# --- Page Configuration ---
+st.set_page_config(
+    page_title="JobFinder Pro+",
+    page_icon="🔍",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 
 # --- Environment Setup ---
 try:
@@ -14,270 +42,1009 @@ try:
     if not load_dotenv():
         st.error("⚠️ Could not load .env file")
     API_KEY = os.getenv("SERPAPI_KEY")
+    HF_TOKEN = os.getenv("HF_TOKEN")  # Changed from OPENAI_KEY
     
     if not API_KEY:
         st.error("❌ SERPAPI_KEY not found in .env file")
+    if not HF_TOKEN:
+        st.warning("ℹ️ HF_TOKEN not found, some features may be limited")
     
 except Exception as e:
     st.error(f"🚨 Critical Error: {str(e)}")
     st.code(traceback.format_exc())
     st.stop()  # Stop execution if env setup fails
 
-# --- Page Configuration ---
-st.set_page_config(
-    page_title="JobFinder Pro",
-    page_icon="🔍",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# --- AI Model Initialization ---
+@st.cache_resource
+def load_ai_model():
+    try:
+        return pipeline(
+            "text-generation",
+            model="facebook/blenderbot-400M-distill",  # Smaller free model
+            device="cpu",
+            truncation=True,
+            max_length=500
+        )
+    except Exception as e:
+        st.error(f"⚠️ Failed to load AI model: {str(e)}")
+        return None
+
+local_ai = load_ai_model()
+hf_client = InferenceClient(token=HF_TOKEN) if HF_TOKEN else None
+
+
+# --- PyTorch CPU Optimization ---
+import torch
+torch.set_num_threads(4)  # Limit CPU threads for better performance
+
+# --- Constants and Configuration ---
+CACHE_FILE = "geocode_cache.json"
+SAVED_JOBS_FILE = "saved_jobs.json"
+USER_PROFILES_FILE = "user_profiles.json"
+COUNTRIES = {
+    "Australia": "au",
+    "United States": "us",
+    "Canada": "ca",
+    "United Kingdom": "uk",
+    "Germany": "de",
+    "France": "fr",
+    "India": "in",
+    "Japan": "jp",
+    "Singapore": "sg",
+    "New Zealand": "nz"
+}
+
+# --- File Management Functions ---
+def load_cache():
+    if Path(CACHE_FILE).exists():
+        with open(CACHE_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_cache(cache):
+    with open(CACHE_FILE, "w") as f:
+        json.dump(cache, f)
+
+def load_saved_jobs():
+    if Path(SAVED_JOBS_FILE).exists():
+        with open(SAVED_JOBS_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_jobs(jobs):
+    with open(SAVED_JOBS_FILE, "w") as f:
+        json.dump(jobs, f)
+
+def load_user_profiles():
+    if Path(USER_PROFILES_FILE).exists():
+        with open(USER_PROFILES_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_user_profiles(profiles):
+    with open(USER_PROFILES_FILE, "w") as f:
+        json.dump(profiles, f)
+
+# Initialize data stores
+geocode_cache = load_cache()
+# Initialize SavedJobsManager
+jobs_manager = SavedJobsManager()
+user_profiles = load_user_profiles()
+
+# --- Geocoding Setup ---
+geolocator = Nominatim(user_agent="job_finder_pro")
+geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
+
+def get_coordinates(location_name):
+    """Get latitude and longitude for a location name with caching"""
+    if location_name in geocode_cache:
+        return tuple(geocode_cache[location_name])
+    
+    try:
+        location = geocode(location_name)
+        if location:
+            coords = (location.latitude, location.longitude)
+            geocode_cache[location_name] = coords
+            save_cache(geocode_cache)
+            return coords
+        return (0, 0)
+    except Exception as e:
+        st.warning(f"Geocoding error for {location_name}: {str(e)}")
+        return (0, 0)
+
+# --- PDF Functions ---
+def create_pdf_resume(user_data):
+    """Create PDF resume using PyPDF2 and ReportLab"""
+    packet = BytesIO()
+    can = canvas.Canvas(packet, pagesize=letter)
+    
+    # Set font and starting position
+    can.setFont("Helvetica-Bold", 16)
+    y_position = 750
+    
+    # Personal Information
+    can.drawString(72, y_position, user_data['name'])
+    y_position -= 20
+    
+    can.setFont("Helvetica", 12)
+    can.drawString(72, y_position, user_data['email'])
+    y_position -= 15
+    can.drawString(72, y_position, user_data['phone'])
+    y_position -= 30
+    
+    # Summary
+    can.setFont("Helvetica-Bold", 14)
+    can.drawString(72, y_position, "Professional Summary")
+    y_position -= 20
+    can.setFont("Helvetica", 12)
+    
+    # Handle multi-line summary
+    summary_lines = []
+    words = user_data['summary'].split()
+    line = ""
+    for word in words:
+        if len(line) + len(word) < 80:
+            line += word + " "
+        else:
+            summary_lines.append(line)
+            line = word + " "
+    if line:
+        summary_lines.append(line)
+    
+    for line in summary_lines:
+        can.drawString(72, y_position, line)
+        y_position -= 15
+    y_position -= 15
+    
+    # Experience
+    can.setFont("Helvetica-Bold", 14)
+    can.drawString(72, y_position, "Work Experience")
+    y_position -= 20
+    
+    for exp in user_data['experience']:
+        can.setFont("Helvetica-Bold", 12)
+        can.drawString(72, y_position, f"{exp['title']} at {exp['company']}")
+        y_position -= 15
+        
+        can.setFont("Helvetica-Oblique", 10)
+        can.drawString(72, y_position, f"{exp['start']} - {exp['end']}")
+        y_position -= 15
+        
+        can.setFont("Helvetica", 12)
+        desc_lines = []
+        words = exp['description'].split()
+        line = ""
+        for word in words:
+            if len(line) + len(word) < 80:
+                line += word + " "
+            else:
+                desc_lines.append(line)
+                line = word + " "
+        if line:
+            desc_lines.append(line)
+        
+        for line in desc_lines:
+            can.drawString(72, y_position, line)
+            y_position -= 15
+        y_position -= 10
+    
+    # Education
+    can.setFont("Helvetica-Bold", 14)
+    can.drawString(72, y_position, "Education")
+    y_position -= 20
+    
+    can.setFont("Helvetica", 12)
+    for edu in user_data['education']:
+        can.drawString(72, y_position, f"{edu['degree']}, {edu['institution']} ({edu['year']})")
+        y_position -= 15
+    
+    # Skills
+    can.setFont("Helvetica-Bold", 14)
+    can.drawString(72, y_position, "Skills")
+    y_position -= 20
+    
+    can.setFont("Helvetica", 12)
+    skills = ', '.join(user_data['skills'])
+    skill_lines = []
+    words = skills.split()
+    line = ""
+    for word in words:
+        if len(line) + len(word) < 80:
+            line += word + " "
+        else:
+            skill_lines.append(line)
+            line = word + " "
+    if line:
+        skill_lines.append(line)
+    
+    for line in skill_lines:
+        can.drawString(72, y_position, line)
+        y_position -= 15
+    
+    # Save the PDF
+    can.save()
+    
+    # Move to beginning of BytesIO buffer
+    packet.seek(0)
+    new_pdf = PdfReader(packet)
+    
+    # Create output PDF
+    output = BytesIO()
+    writer = PdfWriter()
+    writer.add_page(new_pdf.pages[0])
+    writer.write(output)
+    
+    return output.getvalue()
+
+def extract_text_from_pdf(uploaded_file):
+    """Extract text from uploaded PDF"""
+    reader = PdfReader(uploaded_file)
+    text = ""
+    for page in reader.pages:
+        text += page.extract_text() + "\n"
+    return text
+
+# --- AI Assistant Functions ---
+def generate_ai_response(prompt, context=""):
+    """Generate response using BlenderBot model with resume-focused tuning"""
+    try:
+        # Enhanced prompt template for career advice
+        full_prompt = f"""<<SYS>>You are TESSERACT, an expert career coach specializing in resumes and job hunting. Provide:
+        - Concise, actionable advice
+        - Industry-specific best practices
+        - Professional tone
+        - Focus on resumes, cover letters, and interviews
+        <</SYS>>
+        
+        [CONTEXT]
+        {context}
+        
+        [QUESTION]
+        {prompt}
+        
+        [ANSWER]"""
+        
+        # Generate response using the local BlenderBot model
+        if "chatbot" in st.session_state and "conversation" in st.session_state:
+            st.session_state.conversation.add_user_input(full_prompt)
+            st.session_state.chatbot(st.session_state.conversation)
+            response = st.session_state.conversation.generated_responses[-1]
+            
+            # Clean the output
+            return response.split("[ANSWER]")[-1].strip()
+        else:
+            return "⚠️ AI assistant is not properly initialized. Please refresh the page."
+    
+    except Exception as e:
+        return f"⚠️ I'm having trouble generating a response. Error: {str(e)}"
+
+def analyze_resume_for_job(resume_text, job_description):
+    prompt = f"""
+    Analyze how well this resume matches the job description and suggest improvements.
+    
+    Resume:
+    {resume_text}
+    
+    Job Description:
+    {job_description}
+    
+    Provide:
+    1. Match score (0-100%)
+    2. 3 key strengths
+    3. 3 areas for improvement
+    4. Suggested resume tweaks
+    """
+    return generate_ai_response(prompt)
+
+def generate_cover_letter(resume_text, job_description):
+    prompt = f"""
+    Write a professional cover letter based on this resume and job description.
+    
+    Resume:
+    {resume_text}
+    
+    Job Description:
+    {job_description}
+    
+    The cover letter should:
+    - Be 3-4 paragraphs
+    - Highlight relevant skills/experience
+    - Show enthusiasm for the role
+    - Be tailored to the job
+    """
+    return generate_ai_response(prompt)
+
+# --- Notification Functions ---
+def check_for_new_jobs(user_profile):
+    """Check if new jobs matching user criteria have been posted"""
+    return []
+
+def send_notification(message):
+    """In a real app, this would send email/push notifications"""
+    st.session_state.notifications.append({
+        "message": message,
+        "time": datetime.now(pytz.utc).isoformat(),
+        "read": False
+    })
+
+
 
 # --- CSS Styling ---
 st.markdown("""
-    <style>
-        .main {
-            background-color: #f8f9fa;
-        }
-        .stTextInput>div>div>input {
-            padding: 10px;
-            font-size: 16px;
-        }
-        .stButton>button {
-            width: 100%;
-            padding: 10px;
-            background-color: #4CAF50;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            font-size: 16px;
-            font-weight: bold;
-            transition: all 0.3s;
-        }
-        .stButton>button:hover {
-            background-color: #45a049;
-            transform: scale(1.01);
-        }
-        .job-card {
-            padding: 20px;
-            margin-bottom: 15px;
-            border-radius: 10px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            background-color: white;
-            transition: all 0.3s;
-            cursor: pointer;
-        }
-        .job-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 6px 12px rgba(0,0,0,0.15);
-        }
-        .company-name {
-            font-weight: bold;
-            color: #2c3e50;
-        }
-        .job-title {
-            font-size: 18px;
-            color: #3498db;
-            margin-bottom: 5px;
-        }
-        .location {
-            color: #7f8c8d;
-            font-size: 14px;
-        }
-        .via {
-            font-size: 12px;
-            color: #95a5a6;
-            font-style: italic;
-        }
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 2rem;
-            border-radius: 0 0 10px 10px;
-            margin-bottom: 2rem;
-        }
-        .search-container {
-            background-color: white;
-            padding: 2rem;
-            border-radius: 10px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            margin-bottom: 2rem;
-        }
-        .footer {
-            text-align: center;
-            padding: 1rem;
-            color: #7f8c8d;
-            font-size: 12px;
-        }
-        .error-box {
-            background-color: #ffebee;
-            padding: 15px;
-            border-radius: 5px;
-            border-left: 4px solid #f44336;
-            margin-bottom: 15px;
-        }
-        .job-details {
-            padding: 20px;
-            background-color: white;
-            border-radius: 10px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            margin-top: 15px;
-        }
-        .map-container {
-            margin-top: 20px;
-            border-radius: 10px;
-            overflow: hidden;
-        }
-    </style>
+<style>
+    /* ===== NEON LIGHT GREEN & BLACK THEME ===== */
+    :root {
+        --neon-green: #00FF7F;
+        --dark-bg: #0D0208;
+        --text-white: #F0F8FF;
+        --hover-glow: 0 0 15px #00FF7F;
+    }
+
+    /* Main Background */
+    .stApp {
+        background-color: var(--dark-bg);
+    }
+
+    /* Header */
+    .header {
+        background: linear-gradient(90deg, #0A0A0A 0%, var(--dark-bg) 100%);
+        padding: 20px;
+        border-radius: 10px;
+        margin-bottom: 20px;
+        border: 1px solid var(--neon-green);
+        box-shadow: 0 0 10px rgba(0, 255, 127, 0.2);
+    }
+
+    /* Chat Messages */
+    .chat-message {
+        padding: 10px;
+        border-radius: 10px;
+        margin: 5px 0;
+        max-width: 80%;
+    }
+    .user-message {
+        background-color: rgba(0, 255, 127, 0.15);
+        margin-left: auto;
+        margin-right: 0;
+        border: 1px solid var(--neon-green);
+        color: var(--text-white);
+    }
+    .assistant-message {
+        background-color: rgba(13, 2, 8, 0.7);
+        margin-left: 0;
+        margin-right: auto;
+        border: 1px solid #555;
+        color: var(--text-white);
+    }
+
+    /* Resume Section */
+    .resume-section {
+        background-color: rgba(13, 2, 8, 0.8);
+        padding: 15px;
+        border-radius: 10px;
+        margin-bottom: 15px;
+        box-shadow: 0 0 8px rgba(0, 255, 127, 0.1);
+        border: 1px solid var(--neon-green);
+        color: var(--text-white);
+    }
+
+    /* Tabs */
+    .tab-content {
+        padding: 15px;
+        background-color: rgba(13, 2, 8, 0.7);
+        border-radius: 0 0 10px 10px;
+        box-shadow: 0 2px 4px rgba(0, 255, 127, 0.1);
+        color: var(--text-white);
+    }
+
+    /* Notifications */
+    .notification {
+        padding: 10px;
+        border-left: 4px solid var(--neon-green);
+        background-color: rgba(13, 2, 8, 0.9);
+        margin-bottom: 10px;
+        border-radius: 4px;
+        color: var(--text-white);
+        transition: all 0.3s ease;
+    }
+    .notification.unread {
+        border-left-color: #00F5FF;
+        box-shadow: 0 0 10px rgba(0, 245, 255, 0.2);
+    }
+    .notification:hover {
+        transform: translateX(5px);
+        box-shadow: var(--hover-glow);
+    }
+
+    /* Job Cards */
+    .job-card {
+        padding: 15px;
+        background-color: rgba(13, 2, 8, 0.7);
+        border-radius: 8px;
+        margin-bottom: 15px;
+        border: 1px solid #333;
+        transition: all 0.3s ease;
+    }
+    .job-card:hover {
+        border-color: var(--neon-green);
+        box-shadow: var(--hover-glow);
+        transform: translateY(-3px);
+    }
+    .job-title {
+        font-weight: bold;
+        font-size: 1.1em;
+        margin-bottom: 5px;
+        color: var(--neon-green);
+    }
+    .company-name {
+        font-style: italic;
+        margin-bottom: 5px;
+        color: #00F5FF;
+    }
+
+    /* Footer */
+    .footer {
+        text-align: center;
+        margin-top: 30px;
+        padding: 10px;
+        color: var(--neon-green);
+        font-size: 0.9em;
+        border-top: 1px solid var(--neon-green);
+    }
+
+    /* Buttons (Added extra) */
+    .stButton>button {
+        background-color: var(--dark-bg) !important;
+        color: var(--neon-green) !important;
+        border: 1px solid var(--neon-green) !important;
+        transition: all 0.3s ease !important;
+    }
+    .stButton>button:hover {
+        box-shadow: var(--hover-glow);
+        color: var(--dark-bg) !important;
+        background-color: var(--neon-green) !important;
+    }
+</style>
 """, unsafe_allow_html=True)
+
+# --- Initialize Session State ---
+if 'active_tab' not in st.session_state:
+    st.session_state.active_tab = "💬 AI Assistant"
+if 'selected_job' not in st.session_state:
+    st.session_state.selected_job = None
+if 'chat_history' not in st.session_state:
+    st.session_state.chat_history = []
+if 'notifications' not in st.session_state:
+    st.session_state.notifications = []
+if 'resume_data' not in st.session_state:
+    st.session_state.resume_data = {
+        "name": "",
+        "email": "",
+        "phone": "",
+        "summary": "",
+        "experience": [],
+        "education": [],
+        "skills": []
+    }
+if 'current_user' not in st.session_state:
+    st.session_state.current_user = None
+if 'resume_text' not in st.session_state:
+    st.session_state.resume_text = ""
+if 'resume_file' not in st.session_state:
+    st.session_state.resume_file = None
+if 'generated_cover_letter' not in st.session_state:
+    st.session_state.generated_cover_letter = ""
 
 # --- Header Section ---
 st.markdown("""
     <div class="header">
-        <h1 style="color:white; margin:0;">🔍 JobFinder Pro</h1>
-        <p style="color:white; opacity:0.8; margin:0;">Find your dream job from thousands of listings worldwide</p>
+        <h1 style="color:white; margin:0;">🔍 JobFinder Pro+</h1>
+        <p style="color:white; opacity:0.8; margin:0;">The Next-Gen AI-Powered Career Revolution</p>
     </div>
 """, unsafe_allow_html=True)
 
-# --- Search Section ---
-with st.container():
-    col1, col2, col3 = st.columns([3, 3, 2])
-    
-    with col1:
-        job_title = st.text_input("Job Title", "Software Engineer", key="job_title")
-    
-    with col2:
-        location = st.text_input("Location", "New York", key="location")
-    
-    with col3:
-        st.write("")  # Spacer
-        st.write("")  # Spacer
-        search_clicked = st.button("🚀 Find Jobs", key="search_button")
+# --- Main App Tabs ---
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "🔍 Job Search", 
+    "💬 AI Assistant", 
+    "📄 Resume Builder", 
+    "🔔 Notifications", 
+    "💾 Saved Jobs"
+])
 
-# --- Session State for Selected Job ---
-if 'selected_job' not in st.session_state:
-    st.session_state.selected_job = None
+with tab1:
+    # --- Job Search Interface ---
+    with st.container():
+        col1, col2 = st.columns([3, 2])
+        
+        with col1:
+            job_title = st.text_input("Job Title", "Software Engineer", key="job_title")
+        
+        with col2:
+            default_country = "Australia"
+            selected_country = st.selectbox(
+                "Country",
+                list(COUNTRIES.keys()),
+                index=list(COUNTRIES.keys()).index(default_country) if default_country in COUNTRIES else 0
+            )
 
-# --- Results Section ---
-if search_clicked:
-    with st.spinner('Searching for the best jobs...'):
-        # Simulate loading for better UX
-        time.sleep(1)
+    with st.container():
+        col1, col2, col3 = st.columns([3, 2, 1])
         
-        # Fetch jobs from SerpAPI
-        params = {
-            "engine": "google_jobs",
-            "q": job_title,
-            "location": location,
-            "hl": "en",
-            "api_key": API_KEY,
-            "chips": "date_posted:today"  # Get fresher jobs
-        }
+        with col1:
+            location = st.text_input(
+                "Location", 
+                "Sydney",
+                key="location",
+                help="Enter city, region, or postal code."
+            )
         
-        try:
-            response = requests.get("https://serpapi.com/search", params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            
-            jobs = data.get("jobs_results", [])
-            
-            if jobs:
-                st.success(f"🎉 Found {len(jobs)} jobs in {location}!")
-                
-                # --- Display Jobs as Clickable Cards ---
-                for idx, job in enumerate(jobs):
-                    with st.container():
-                        # Add clickable card
-                        clicked = st.markdown(f"""
-                            <div class="job-card" onclick="window.jobClicked{idx} = true">
-                                <div class="job-title">{job.get('title', 'N/A')}</div>
-                                <div class="company-name">{job.get('company_name', 'N/A')}</div>
-                                <div class="location">{job.get('location', 'N/A')}</div>
-                                <div class="via">via {job.get('via', 'Unknown')}</div>
-                            </div>
-                        """, unsafe_allow_html=True)
-                        
-                        # Handle card click (using session state)
-                        if st.session_state.get(f"job_clicked_{idx}", False):
-                            st.session_state.selected_job = job
-                        
-                        # Set click handler via JS (workaround for Streamlit)
-                        st.components.v1.html(f"""
-                            <script>
-                                window.jobClicked{idx} = false;
-                                setInterval(() => {{
-                                    if (window.jobClicked{idx}) {{
-                                        parent.window.jobClicked{idx} = true;
-                                        window.jobClicked{idx} = false;
-                                    }}
-                                }}, 100);
-                            </script>
-                        """, height=0)
-                
-                # --- Show Selected Job Details ---
-                if st.session_state.selected_job:
-                    job = st.session_state.selected_job
-                    
-                    with st.container():
-                        st.markdown(f"""
-                            <div class="job-details">
-                                <h3>{job.get('title', 'N/A')}</h3>
-                                <p><strong>Company:</strong> {job.get('company_name', 'N/A')}</p>
-                                <p><strong>Location:</strong> {job.get('location', 'N/A')}</p>
-                                <p><strong>Posted via:</strong> {job.get('via', 'Unknown')}</p>
-                                <hr>
-                                <p><strong>Description:</strong></p>
-                                <p>{job.get('description', 'No description available')}</p>
-                            </div>
-                        """, unsafe_allow_html=True)
-                        
-                        # Apply Button
-                        if job.get('related_links') and len(job['related_links']) > 0:
-                            apply_url = job['related_links'][0]['link']
-                            st.link_button("✨ Apply Now", apply_url)
-                        
-                        # Map (using approximate coordinates)
-                        try:
-                            # Note: In production, use geocoding API for precise coordinates
-                            m = folium.Map(location=[40.7128, -74.0060], zoom_start=12)  # Default to NYC
-                            folium.Marker(
-                                [40.7128, -74.0060],  # Replace with actual coordinates
-                                popup=job.get('company_name', 'Job Location'),
-                                tooltip="Click for details"
-                            ).add_to(m)
-                            
-                            st.markdown("### 📍 Location")
-                            with st.container():
-                                folium_static(m, width=700)
-                        except Exception as e:
-                            st.warning(f"Couldn't load map: {str(e)}")
-                
-                # --- Data Table View ---
-                with st.expander("📊 View as Data Table"):
-                    df = pd.DataFrame(jobs)[["title", "company_name", "location", "via"]]
-                    st.dataframe(df.style.set_properties(**{
-                        'background-color': '#f8f9fa',
-                        'color': '#2c3e50',
-                        'border': '1px solid #e0e0e0'
-                    }))
-                
-            else:
-                st.warning("No jobs found. Try adjusting your search criteria.")
+        with col2:
+            radius_options = {
+                "Exact location only": 0,
+                "Within 5 km": 5,
+                "Within 10 km": 10,
+                "Within 25 km": 25,
+                "Within 50 km": 50,
+                "Within 100 km": 100
+            }
+            radius = st.selectbox(
+                "Search Radius",
+                options=list(radius_options.keys()),
+                index=2
+            )
+            radius_km = radius_options[radius]
         
-        except requests.exceptions.RequestException as e:
+        with col3:
+            st.write("")  # Spacer
+            st.write("")  # Spacer
+            search_clicked = st.button("🚀 Find Jobs", key="search_button")
+
+    # --- Job Results Display ---
+    if search_clicked:
+        with st.spinner('Searching for the best jobs...'):
+            # Simulate job search results
+            time.sleep(2)
+            st.session_state.selected_job = {
+                "title": "Senior Software Engineer",
+                "company_name": "Tech Corp Inc.",
+                "location": "Sydney, NSW",
+                "via": "LinkedIn",
+                "description": "We're looking for a skilled software engineer with 5+ years experience in Python and web development. Responsibilities include developing new features, maintaining existing codebase, and collaborating with cross-functional teams.",
+                "posted": "2 days ago"
+            }
+            st.success("Found 15 matching jobs!")
+
+    # --- Job Details Section with Save Option ---
+    if st.session_state.selected_job:
+        job = st.session_state.selected_job
+        job_id = f"{job.get('title', '')}_{job.get('company_name', '')}".replace(" ", "_")
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
             st.markdown(f"""
-                <div class="error-box">
-                    <strong>Error fetching jobs:</strong> {str(e)}<br><br>
-                    Try these solutions:
-                    <ul>
-                        <li>Check your internet connection</li>
-                        <li>Verify your SerpAPI key is valid</li>
-                        <li>Try a more common job title/location</li>
-                    </ul>
+                <div class="job-card">
+                    <div class="job-title">{job.get('title', 'N/A')}</div>
+                    <div class="company-name">{job.get('company_name', 'N/A')}</div>
+                    <div class="location">{job.get('location', 'N/A')}</div>
+                    <div class="via">via {job.get('via', 'Unknown')}</div>
+                    <p><strong>Description:</strong></p>
+                    <p>{job.get('description', 'No description available')}</p>
+                    <p><small>Posted: {job.get('posted', 'Date not available')}</small></p>
                 </div>
             """, unsafe_allow_html=True)
+        
+        with col2:
+            if st.button("💾 Save Job"):
+                job_id=jobs_manager.save_job(job)
+                st.success("Job Saved")
+    
+            
+            if st.button("📄 Generate Cover Letter"):
+                if 'resume_text' in st.session_state and st.session_state.resume_text:
+                    with st.spinner('Generating cover letter...'):
+                        cover_letter = generate_cover_letter(
+                            st.session_state.resume_text,
+                            job.get('description', '')
+                        )
+                        st.session_state.generated_cover_letter = cover_letter
+                        st.rerun()  # Use this instead
+                else:
+                    st.warning("Please upload or create a resume first")
+
+            if 'generated_cover_letter' in st.session_state:
+                st.download_button(
+                    label="📥 Download Cover Letter",
+                    data=st.session_state.generated_cover_letter,
+                    file_name=f"cover_letter_{job_id}.txt",
+                    mime="text/plain"
+                )
+
+with tab2:
+    st.markdown("### 🤖 Career Assistant - TESSERACT")
+    
+    # Initialize the chatbot in session state if not exists
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = [
+            {"role": "assistant", "content": "Hello! I'm TESSERACT, your AI career coach. "
+             "Ask me anything about resumes, cover letters, or job interviews!"}
+        ]
+    
+    # Display chat messages
+    for msg in st.session_state.chat_history:
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+
+    # Quick action buttons
+    with st.expander("💡 Quick Career Questions"):
+        cols = st.columns(2)
+        with cols[0]:
+            if st.button("Best resume format"):
+                st.session_state.chat_history.append({"role": "user", "content": "What's the best resume format for my industry?"})
+        with cols[1]:
+            if st.button("ATS optimization"):
+                st.session_state.chat_history.append({"role": "user", "content": "How can I optimize my resume for ATS systems?"})
+        
+        cols = st.columns(2)
+        with cols[0]:
+            if st.button("Cover letter tips"):
+                st.session_state.chat_history.append({"role": "user", "content": "What makes a strong cover letter?"})
+        with cols[1]:
+            if st.button("Interview prep"):
+                st.session_state.chat_history.append({"role": "user", "content": "What are the top interview preparation tips?"})
+
+    # Main chat input
+    if prompt := st.chat_input("Ask your career question..."):
+        st.session_state.active_tab = "💬 AI Assistant"
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
+        
+        with st.spinner("Researching..."):
+            # Add resume context if available
+            context = ""
+            if 'resume_text' in st.session_state and st.session_state.resume_text:
+                context = f"Resume Context:\n{st.session_state.resume_text[:500]}..."
+            
+            # Generate response using either local model or Hugging Face Inference API
+            if HF_TOKEN:  # If you have a Hugging Face token
+                try:
+                    response = hf_client.chat_completion(
+                        messages=[{"role": m["role"], "content": m["content"]} 
+                                 for m in st.session_state.chat_history[-6:]],
+                        model="HuggingFaceH4/zephyr-7b-beta",
+                        max_tokens=500
+                    )
+                    ai_response = response.choices[0].message.content
+                except Exception as e:
+                    st.error(f"API Error: {str(e)}")
+                    ai_response = "I'm having trouble connecting to the AI service. Please try again later."
+            elif local_ai:  # Fallback to local model
+                full_prompt = f"""<<SYS>>You are TESSERACT, an expert career coach. Provide concise, actionable advice.<</SYS>>
+                
+                [CONTEXT]
+                {context}
+                
+                [QUESTION]
+                {prompt}"""
+                
+                response = local_ai(full_prompt, max_length=500, do_sample=True)
+                ai_response = response[0]['generated_text'].split('[QUESTION]')[-1].strip()
+            else:
+                ai_response = "AI assistant is not available. Please check your configuration."
+            
+            st.session_state.chat_history.append({"role": "assistant", "content": ai_response})
+        
+        st.rerun()
+
+    # Clear chat button
+    if st.button("🗑️ Clear Chat History", type="secondary"):
+        st.session_state.chat_history = [
+            {"role": "assistant", "content": "Chat history cleared. How can I help with your career questions today?"}
+        ]
+        st.rerun()
+
+with tab3:
+    # --- Resume Builder Interface ---
+    st.markdown("### 📄 Professional Resume Builder")
+    
+    # Resume upload or create new
+    resume_option = st.radio("Choose an option:", ["Create New Resume", "Upload Existing Resume"])
+    
+    if resume_option == "Upload Existing Resume":
+        uploaded_file = st.file_uploader("Upload your resume (PDF or TXT)", type=["pdf", "txt"])
+        if uploaded_file:
+            if uploaded_file.type == "application/pdf":
+                try:
+                    resume_text = extract_text_from_pdf(uploaded_file)
+                    st.session_state.resume_text = resume_text
+                    st.session_state.resume_file = uploaded_file
+                    st.text_area("Extracted Resume Content", resume_text, height=300)
+                except Exception as e:
+                    st.error(f"Failed to read PDF: {str(e)}")
+            else:
+                resume_text = str(uploaded_file.read(), "utf-8")
+                st.session_state.resume_text = resume_text
+                st.text_area("Resume Content", resume_text, height=300)
+    else:
+        # Resume form
+        with st.form("resume_form"):
+            st.session_state.resume_data["name"] = st.text_input("Full Name", st.session_state.resume_data["name"])
+            st.session_state.resume_data["email"] = st.text_input("Email", st.session_state.resume_data["email"])
+            st.session_state.resume_data["phone"] = st.text_input("Phone", st.session_state.resume_data["phone"])
+            st.session_state.resume_data["summary"] = st.text_area("Professional Summary", st.session_state.resume_data["summary"])
+            
+            # Experience section
+            st.markdown("### Work Experience")
+            for i, exp in enumerate(st.session_state.resume_data["experience"]):
+                cols = st.columns([3, 2, 1])
+                with cols[0]:
+                    st.session_state.resume_data["experience"][i]["title"] = st.text_input(
+                        f"Job Title #{i+1}", 
+                        exp["title"], 
+                        key=f"exp_title_{i}"
+                    )
+                with cols[1]:
+                    st.session_state.resume_data["experience"][i]["company"] = st.text_input(
+                        f"Company #{i+1}", 
+                        exp["company"], 
+                        key=f"exp_company_{i}"
+                    )
+                with cols[2]:
+                    years = st.text_input(
+                        f"Years #{i+1}", 
+                        f"{exp['start']}-{exp['end']}", 
+                        key=f"exp_years_{i}"
+                    )
+                    start_end = years.split("-")
+                    if len(start_end) == 2:
+                        st.session_state.resume_data["experience"][i]["start"] = start_end[0].strip()
+                        st.session_state.resume_data["experience"][i]["end"] = start_end[1].strip()
+                
+                st.session_state.resume_data["experience"][i]["description"] = st.text_area(
+                    f"Description #{i+1}", 
+                    exp["description"], 
+                    key=f"exp_desc_{i}"
+                )
+            
+            # Add experience button - outside the form
+            if st.form_submit_button("➕ Add Another Position"):
+                st.session_state.resume_data["experience"].append({
+                    "title": "",
+                    "company": "",
+                    "start": "",
+                    "end": "",
+                    "description": ""
+                })
+                st.rerun()  # Use this instead
+            
+            # Education section
+            st.markdown("### Education")
+            for i, edu in enumerate(st.session_state.resume_data["education"]):
+                cols = st.columns([3, 2, 1])
+                with cols[0]:
+                    st.session_state.resume_data["education"][i]["degree"] = st.text_input(
+                        f"Degree #{i+1}", 
+                        edu["degree"], 
+                        key=f"edu_degree_{i}"
+                    )
+                with cols[1]:
+                    st.session_state.resume_data["education"][i]["institution"] = st.text_input(
+                        f"Institution #{i+1}", 
+                        edu["institution"], 
+                        key=f"edu_institution_{i}"
+                    )
+                with cols[2]:
+                    st.session_state.resume_data["education"][i]["year"] = st.text_input(
+                        f"Year #{i+1}", 
+                        edu["year"], 
+                        key=f"edu_year_{i}"
+                    )
+            
+            # Add education button - outside the form
+            if st.form_submit_button("➕ Add Another Education"):
+                st.session_state.resume_data["education"].append({
+                    "degree": "",
+                    "institution": "",
+                    "year": ""
+                })
+                st.rerun()  # Use this instead
+            
+            # Skills section
+            st.markdown("### Skills")
+            skills_text = ", ".join(st.session_state.resume_data["skills"])
+            new_skills = st.text_input("List your skills (comma separated)", skills_text)
+            st.session_state.resume_data["skills"] = [s.strip() for s in new_skills.split(",") if s.strip()]
+            
+            # Form submit button
+            submit_resume = st.form_submit_button("💾 Save Resume")
+        
+        # Handle form submission outside the form
+        if submit_resume:
+            st.success("Resume saved!")
+            
+            # Generate PDF
+            try:
+                pdf_bytes = create_pdf_resume(st.session_state.resume_data)
+                st.download_button(
+                    label="📥 Download Resume as PDF",
+                    data=pdf_bytes,
+                    file_name="my_resume.pdf",
+                    mime="application/pdf"
+                )
+            except Exception as e:
+                st.error(f"Failed to generate PDF: {str(e)}")
+            
+            # Store text version for AI analysis
+            resume_text = f"""
+            Name: {st.session_state.resume_data["name"]}
+            Contact: {st.session_state.resume_data["email"]} | {st.session_state.resume_data["phone"]}
+            
+            Summary:
+            {st.session_state.resume_data["summary"]}
+            
+            Experience:
+            {chr(10).join([f"{exp['title']} at {exp['company']} ({exp['start']}-{exp['end']}): {exp['description']}" for exp in st.session_state.resume_data["experience"]])}
+            
+            Education:
+            {chr(10).join([f"{edu['degree']}, {edu['institution']} ({edu['year']})" for edu in st.session_state.resume_data["education"]])}
+            
+            Skills:
+            {', '.join(st.session_state.resume_data["skills"])}
+            """
+            st.session_state.resume_text = resume_text
+    
+    # Resume Analysis for Selected Job
+    if st.session_state.selected_job and 'resume_text' in st.session_state:
+        st.markdown("### 🔍 Resume Analysis for Selected Job")
+        if st.button("Analyze Resume for This Job"):
+            with st.spinner('Analyzing resume...'):
+                analysis = analyze_resume_for_job(
+                    st.session_state.resume_text,
+                    st.session_state.selected_job.get('description', '')
+                )
+                st.markdown(f"""
+                    <div class="resume-section">
+                        <h4>Resume Analysis</h4>
+                        <div>{analysis.replace('\n', '<br>')}</div>
+                    </div>
+                """, unsafe_allow_html=True)
+
+with tab4:
+    # --- Notifications Center ---
+    st.markdown("### 🔔 Notifications")
+    
+    if not st.session_state.notifications:
+        st.info("You have no notifications yet.")
+    else:
+        for i, notification in enumerate(st.session_state.notifications):
+            read_class = "" if notification['read'] else "unread"
+            st.markdown(f"""
+                <div class="notification {read_class}">
+                    <strong>{notification['time']}</strong><br>
+                    {notification['message']}
+                </div>
+            """, unsafe_allow_html=True)
+            
+            if not notification['read']:
+                if st.button(f"Mark as read #{i+1}"):
+                    st.session_state.notifications[i]['read'] = True
+                    st.rerun()  # Use this instead
+    
+    # Simulate new job notifications (demo only)
+    if st.button("Simulate New Job Alert (Demo)"):
+        send_notification("3 new Data Analyst jobs matching your profile were posted!")
+        st.rerun()  # Use this instead
+
+with tab5:
+    # --- Saved Jobs ---
+    st.markdown("### 💾 Saved Jobs")
+    
+    saved_jobs = jobs_manager.get_all_jobs()
+    
+    if not saved_jobs:
+        st.info("You haven't saved any jobs yet.")
+    else:
+        for job_id, saved_job in saved_jobs.items():
+            job = saved_job['job']
+            
+            # Create expandable section for each job
+            with st.expander(f"{job.get('title', 'N/A')} at {job.get('company_name', 'N/A')} - {saved_job['application_status']}"):
+                st.markdown(f"""
+                    <div class="job-card">
+                        <div class="job-title">{job.get('title', 'N/A')}</div>
+                        <div class="company-name">{job.get('company_name', 'N/A')}</div>
+                        <div class="location">{job.get('location', 'N/A')}</div>
+                        <div class="via">via {job.get('via', 'Unknown')}</div>
+                        <p><strong>Status:</strong> {saved_job['application_status']}</p>
+                        <p><small>Saved on: {saved_job['saved_at']}</small></p>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                # Job description
+                st.markdown("**Job Description:**")
+                st.write(job.get('description', 'No description available'))
+                
+                # User notes
+                notes = st.text_area("Your Notes", 
+                                   saved_job.get('notes', ''), 
+                                   key=f"notes_{job_id}")
+                
+                if notes != saved_job.get('notes', ''):
+                    jobs_manager.update_job_notes(job_id, notes)
+                
+                # Action buttons
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    if st.button(f"📄 Apply Now", key=f"apply_{job_id}"):
+                        # Set the job as selected for application
+                        st.session_state.selected_job = job
+                        st.session_state.applying_for_job_id = job_id
+                        st.rerun()
+                
+                with col2:
+                    if st.button(f"✏️ Generate Cover Letter", key=f"cover_{job_id}"):
+                        if 'resume_text' in st.session_state and st.session_state.resume_text:
+                            with st.spinner('Generating cover letter...'):
+                                cover_letter = generate_cover_letter(
+                                    st.session_state.resume_text,
+                                    job.get('description', '')
+                                )
+                                st.session_state.generated_cover_letter = cover_letter
+                                st.rerun()
+                        else:
+                            st.warning("Please upload or create a resume first")
+                
+                with col3:
+                    if st.button(f"🗑️ Remove", key=f"remove_{job_id}"):
+                        jobs_manager.remove_job(job_id)
+                        st.success("Job removed from saved jobs!")
+                        st.rerun()
+                
+                # If we're applying for this specific job
+                if st.session_state.get('applying_for_job_id') == job_id:
+                    st.markdown("---")
+                    st.markdown("### 🚀 Apply for This Position")
+                    
+                    # Display application form
+                    with st.form(f"application_form_{job_id}"):
+                        # Pre-fill with user info if available
+                        name = st.text_input("Full Name", st.session_state.resume_data.get("name", ""))
+                        email = st.text_input("Email", st.session_state.resume_data.get("email", ""))
+                        phone = st.text_input("Phone", st.session_state.resume_data.get("phone", ""))
+                        
+                        # Use generated cover letter or create new one
+                        if 'generated_cover_letter' in st.session_state:
+                            cover_letter = st.text_area("Cover Letter", 
+                                                      st.session_state.generated_cover_letter,
+                                                      height=300)
+                        else:
+                            cover_letter = st.text_area("Cover Letter", height=300)
+                        
+                        # Resume upload
+                        resume_file = st.file_uploader("Upload Resume (PDF)", 
+                                                      type=["pdf"],
+                                                      key=f"resume_upload_{job_id}")
+                        
+                        # Submit application
+                        submitted = st.form_submit_button("Submit Application")
+                        
+                        if submitted:
+                            # Validate form
+                            if not all([name, email, cover_letter]):
+                                st.error("Please fill in all required fields")
+                            else:
+                                # In a real app, you would submit to the job board/company here
+                                success, message = jobs_manager.apply_to_job(job_id, cover_letter)
+                                if success:
+                                    st.success(message)
+                                    del st.session_state.applying_for_job_id
+                                    st.rerun()
+                                else:
+                                    st.error(message)
 
 # --- Footer Section ---
 st.markdown("""
     <div class="footer">
-        <p>JobFinder Pro • Powered by SerpAPI • © 2023 All Rights Reserved</p>
+        <p>JobFinder Pro+ • Powered by SerpAPI and Hugging Face • © 2023 All Rights Reserved</p>
     </div>
 """, unsafe_allow_html=True)

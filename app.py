@@ -53,13 +53,13 @@ import traceback
 print("\n=== DEBUGGING TOKEN LOADING ===")
 load_dotenv()
 print("1. .env file exists:", os.path.exists('.env'))
-print("2. HF_TOKEN exists in environment:", bool(os.getenv("HF_TOKEN")))
+print("2. HF_TOKEN exists in environment:", bool(st.secrets["HF_TOKEN"]))
 print("3. Current directory:", os.getcwd())
 print("4. Files in directory:", os.listdir())
 print("==============================\n")
 
 # --- Rest of your existing code ---
-API_KEY = os.getenv("SERPAPI_KEY")
+API_KEY = st.secrets["SERPAPI_KEY"]
 HF_TOKEN = os.getenv("HF_TOKEN")  # This is where you normally load the token
 
 if not HF_TOKEN:
@@ -77,8 +77,8 @@ try:
     # Load environment variables
     if not load_dotenv():
         st.error("⚠️ Could not load .env file")
-    API_KEY = os.getenv("SERPAPI_KEY")
-    HF_TOKEN = os.getenv("HF_TOKEN")  # Changed from OPENAI_KEY
+    API_KEY = st.secrets["SERPAPI_KEY"]
+    HF_TOKEN = st.secrets["HF_TOKEN"]  # Changed from OPENAI_KEY
     
     if not API_KEY:
         st.error("❌ SERPAPI_KEY not found in .env file")

@@ -1,4 +1,12 @@
 import streamlit as st
+# --- Page Configuration ---
+st.set_page_config(
+    page_title="JobFinder Pro+",
+    page_icon="🔍",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 import requests
 import pandas as pd
 from dotenv import load_dotenv
@@ -17,6 +25,7 @@ from datetime import datetime
 import pytz
 import re
 from PyPDF2 import PdfReader, PdfWriter
+import torch
 from transformers import pipeline
 from huggingface_hub import InferenceClient
 from io import BytesIO
@@ -26,16 +35,43 @@ from transformers import pipeline
 from huggingface_hub import InferenceClient
 from dotenv import load_dotenv
 from saved_jobs import SavedJobsManager
+from resume_builder import ProfessionalResumeBuilder
+from logo import show_animated_logo
+# --- Existing Imports ---
+import streamlit as st
+import requests
+import pandas as pd
+from dotenv import load_dotenv
+import os
+import time
+import traceback
+# ... (your other imports)
 
-# --- Page Configuration ---
-st.set_page_config(
-    page_title="JobFinder Pro+",
-    page_icon="🔍",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
 
 
+# +++ ADD DEBUG CODE HERE +++
+print("\n=== DEBUGGING TOKEN LOADING ===")
+load_dotenv()
+print("1. .env file exists:", os.path.exists('.env'))
+print("2. HF_TOKEN exists in environment:", bool(os.getenv("HF_TOKEN")))
+print("3. Current directory:", os.getcwd())
+print("4. Files in directory:", os.listdir())
+print("==============================\n")
+
+# --- Rest of your existing code ---
+API_KEY = os.getenv("SERPAPI_KEY")
+HF_TOKEN = os.getenv("HF_TOKEN")  # This is where you normally load the token
+
+if not HF_TOKEN:
+    st.error("""
+    ❌ Hugging Face token not found. Please:
+    1. Get token from https://huggingface.co/settings/tokens
+    2. Add to .env file as: HF_TOKEN=your_token_here
+    3. Ensure .env is in the same folder as your script
+    """)
+
+
+show_animated_logo()
 # --- Environment Setup ---
 try:
     # Load environment variables
@@ -130,6 +166,8 @@ geocode_cache = load_cache()
 # Initialize SavedJobsManager
 jobs_manager = SavedJobsManager()
 user_profiles = load_user_profiles()
+# Initialize resume builder
+resume_builder = ProfessionalResumeBuilder()
 
 # --- Geocoding Setup ---
 geolocator = Nominatim(user_agent="job_finder_pro")
@@ -661,7 +699,7 @@ with tab1:
                 )
 
 with tab2:
-    st.markdown("### 🤖 Career Assistant - TESSERACT")
+    st.markdown("### 🤖AI Assistant - TESSERACT")
     
     # Initialize the chatbot in session state if not exists
     if "chat_history" not in st.session_state:
@@ -742,171 +780,185 @@ with tab2:
         ]
         st.rerun()
 
+
 with tab3:
-    # --- Resume Builder Interface ---
+    # --- Professional Resume Builder ---
     st.markdown("### 📄 Professional Resume Builder")
     
-    # Resume upload or create new
-    resume_option = st.radio("Choose an option:", ["Create New Resume", "Upload Existing Resume"])
+    # Template selection
+    templates = resume_builder.get_resume_templates()
+    selected_template = st.selectbox(
+        "Choose a resume template",
+        list(templates.keys()),
+        index=0
+    )
     
-    if resume_option == "Upload Existing Resume":
-        uploaded_file = st.file_uploader("Upload your resume (PDF or TXT)", type=["pdf", "txt"])
-        if uploaded_file:
-            if uploaded_file.type == "application/pdf":
-                try:
-                    resume_text = extract_text_from_pdf(uploaded_file)
-                    st.session_state.resume_text = resume_text
-                    st.session_state.resume_file = uploaded_file
-                    st.text_area("Extracted Resume Content", resume_text, height=300)
-                except Exception as e:
-                    st.error(f"Failed to read PDF: {str(e)}")
-            else:
-                resume_text = str(uploaded_file.read(), "utf-8")
-                st.session_state.resume_text = resume_text
-                st.text_area("Resume Content", resume_text, height=300)
-    else:
-        # Resume form
-        with st.form("resume_form"):
-            st.session_state.resume_data["name"] = st.text_input("Full Name", st.session_state.resume_data["name"])
-            st.session_state.resume_data["email"] = st.text_input("Email", st.session_state.resume_data["email"])
-            st.session_state.resume_data["phone"] = st.text_input("Phone", st.session_state.resume_data["phone"])
-            st.session_state.resume_data["summary"] = st.text_area("Professional Summary", st.session_state.resume_data["summary"])
+    # Resume form
+    with st.form("resume_form"):
+        st.session_state.resume_data["name"] = st.text_input(
+            "Full Name", 
+            st.session_state.resume_data["name"],
+            placeholder="John Doe"
+        )
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.session_state.resume_data["email"] = st.text_input(
+                "Email", 
+                st.session_state.resume_data["email"],
+                placeholder="john.doe@example.com"
+            )
+        with col2:
+            st.session_state.resume_data["phone"] = st.text_input(
+                "Phone", 
+                st.session_state.resume_data["phone"],
+                placeholder="(123) 456-7890"
+            )
+        
+        st.session_state.resume_data["summary"] = st.text_area(
+            "Professional Summary", 
+            st.session_state.resume_data["summary"],
+            placeholder="Experienced professional with 5+ years in...",
+            height=100
+        )
+        
+        # Experience section
+        st.markdown("### Work Experience")
+        for i, exp in enumerate(st.session_state.resume_data["experience"]):
+            exp_col1, exp_col2 = st.columns([3, 1])
             
-            # Experience section
-            st.markdown("### Work Experience")
-            for i, exp in enumerate(st.session_state.resume_data["experience"]):
-                cols = st.columns([3, 2, 1])
-                with cols[0]:
-                    st.session_state.resume_data["experience"][i]["title"] = st.text_input(
-                        f"Job Title #{i+1}", 
-                        exp["title"], 
-                        key=f"exp_title_{i}"
-                    )
-                with cols[1]:
-                    st.session_state.resume_data["experience"][i]["company"] = st.text_input(
-                        f"Company #{i+1}", 
-                        exp["company"], 
-                        key=f"exp_company_{i}"
-                    )
-                with cols[2]:
-                    years = st.text_input(
-                        f"Years #{i+1}", 
-                        f"{exp['start']}-{exp['end']}", 
-                        key=f"exp_years_{i}"
-                    )
-                    start_end = years.split("-")
-                    if len(start_end) == 2:
-                        st.session_state.resume_data["experience"][i]["start"] = start_end[0].strip()
-                        st.session_state.resume_data["experience"][i]["end"] = start_end[1].strip()
+            with exp_col1:
+                st.session_state.resume_data["experience"][i]["title"] = st.text_input(
+                    f"Job Title #{i+1}", 
+                    exp["title"],
+                    key=f"exp_title_{i}",
+                    placeholder="Senior Software Engineer"
+                )
+                
+                st.session_state.resume_data["experience"][i]["company"] = st.text_input(
+                    f"Company #{i+1}", 
+                    exp["company"],
+                    key=f"exp_company_{i}",
+                    placeholder="Tech Corporation Inc."
+                )
                 
                 st.session_state.resume_data["experience"][i]["description"] = st.text_area(
                     f"Description #{i+1}", 
-                    exp["description"], 
-                    key=f"exp_desc_{i}"
+                    exp["description"],
+                    key=f"exp_desc_{i}",
+                    placeholder="• Led team of 5 developers...\n• Implemented new features...",
+                    height=100
                 )
             
-            # Add experience button - outside the form
-            if st.form_submit_button("➕ Add Another Position"):
-                st.session_state.resume_data["experience"].append({
-                    "title": "",
-                    "company": "",
-                    "start": "",
-                    "end": "",
-                    "description": ""
-                })
-                st.rerun()  # Use this instead
-            
-            # Education section
-            st.markdown("### Education")
-            for i, edu in enumerate(st.session_state.resume_data["education"]):
-                cols = st.columns([3, 2, 1])
-                with cols[0]:
-                    st.session_state.resume_data["education"][i]["degree"] = st.text_input(
-                        f"Degree #{i+1}", 
-                        edu["degree"], 
-                        key=f"edu_degree_{i}"
-                    )
-                with cols[1]:
-                    st.session_state.resume_data["education"][i]["institution"] = st.text_input(
-                        f"Institution #{i+1}", 
-                        edu["institution"], 
-                        key=f"edu_institution_{i}"
-                    )
-                with cols[2]:
-                    st.session_state.resume_data["education"][i]["year"] = st.text_input(
-                        f"Year #{i+1}", 
-                        edu["year"], 
-                        key=f"edu_year_{i}"
-                    )
-            
-            # Add education button - outside the form
-            if st.form_submit_button("➕ Add Another Education"):
-                st.session_state.resume_data["education"].append({
-                    "degree": "",
-                    "institution": "",
-                    "year": ""
-                })
-                st.rerun()  # Use this instead
-            
-            # Skills section
-            st.markdown("### Skills")
-            skills_text = ", ".join(st.session_state.resume_data["skills"])
-            new_skills = st.text_input("List your skills (comma separated)", skills_text)
-            st.session_state.resume_data["skills"] = [s.strip() for s in new_skills.split(",") if s.strip()]
-            
-            # Form submit button
-            submit_resume = st.form_submit_button("💾 Save Resume")
+            with exp_col2:
+                years = st.text_input(
+                    f"Years #{i+1}", 
+                    f"{exp['start']}-{exp['end']}" if exp['start'] else "",
+                    key=f"exp_years_{i}",
+                    placeholder="2020-2023"
+                )
+                start_end = years.split("-")
+                if len(start_end) == 2:
+                    st.session_state.resume_data["experience"][i]["start"] = start_end[0].strip()
+                    st.session_state.resume_data["experience"][i]["end"] = start_end[1].strip()
         
-        # Handle form submission outside the form
-        if submit_resume:
+        # Add experience button
+        if st.form_submit_button("➕ Add Another Position"):
+            st.session_state.resume_data["experience"].append({
+                "title": "",
+                "company": "",
+                "start": "",
+                "end": "",
+                "description": ""
+            })
+            st.rerun()
+        
+        # Education section
+        st.markdown("### Education")
+        for i, edu in enumerate(st.session_state.resume_data["education"]):
+            edu_col1, edu_col2 = st.columns([3, 1])
+            
+            with edu_col1:
+                st.session_state.resume_data["education"][i]["degree"] = st.text_input(
+                    f"Degree #{i+1}", 
+                    edu["degree"],
+                    key=f"edu_degree_{i}",
+                    placeholder="Bachelor of Science in Computer Science"
+                )
+                
+                st.session_state.resume_data["education"][i]["institution"] = st.text_input(
+                    f"Institution #{i+1}", 
+                    edu["institution"],
+                    key=f"edu_institution_{i}",
+                    placeholder="University of Technology"
+                )
+            
+            with edu_col2:
+                st.session_state.resume_data["education"][i]["year"] = st.text_input(
+                    f"Year #{i+1}", 
+                    edu["year"],
+                    key=f"edu_year_{i}",
+                    placeholder="2018"
+                )
+        
+        # Add education button
+        if st.form_submit_button("➕ Add Another Education"):
+            st.session_state.resume_data["education"].append({
+                "degree": "",
+                "institution": "",
+                "year": ""
+            })
+            st.rerun()
+        
+        # Skills section
+        st.markdown("### Skills")
+        skills_text = ", ".join(st.session_state.resume_data["skills"])
+        new_skills = st.text_input(
+            "List your skills (comma separated)", 
+            skills_text,
+            placeholder="Python, JavaScript, Project Management, etc."
+        )
+        st.session_state.resume_data["skills"] = [s.strip() for s in new_skills.split(",") if s.strip()]
+        
+        # Form submit button
+        if st.form_submit_button("💾 Save & Generate Resume"):
             st.success("Resume saved!")
             
             # Generate PDF
             try:
-                pdf_bytes = create_pdf_resume(st.session_state.resume_data)
-                st.download_button(
-                    label="📥 Download Resume as PDF",
-                    data=pdf_bytes,
-                    file_name="my_resume.pdf",
-                    mime="application/pdf"
+                template_key = templates[selected_template]
+                pdf_bytes = resume_builder.create_resume_pdf(
+                    st.session_state.resume_data,
+                    template=template_key
                 )
+                
+                # Show download button
+                file_name = f"{st.session_state.resume_data['name'].replace(' ', '_')}_Resume.pdf"
+                resume_builder.create_download_button(pdf_bytes, file_name)
+                
+                # Store text version for AI analysis
+                resume_text = f"""
+                Name: {st.session_state.resume_data["name"]}
+                Contact: {st.session_state.resume_data["email"]} | {st.session_state.resume_data["phone"]}
+                
+                Summary:
+                {st.session_state.resume_data["summary"]}
+                
+                Experience:
+                {chr(10).join([f"{exp['title']} at {exp['company']} ({exp['start']}-{exp['end']}): {exp['description']}" 
+                 for exp in st.session_state.resume_data["experience"]])}
+                
+                Education:
+                {chr(10).join([f"{edu['degree']}, {edu['institution']} ({edu['year']})" 
+                 for edu in st.session_state.resume_data["education"]])}
+                
+                Skills:
+                {', '.join(st.session_state.resume_data["skills"])}
+                """
+                st.session_state.resume_text = resume_text
+                
             except Exception as e:
                 st.error(f"Failed to generate PDF: {str(e)}")
-            
-            # Store text version for AI analysis
-            resume_text = f"""
-            Name: {st.session_state.resume_data["name"]}
-            Contact: {st.session_state.resume_data["email"]} | {st.session_state.resume_data["phone"]}
-            
-            Summary:
-            {st.session_state.resume_data["summary"]}
-            
-            Experience:
-            {chr(10).join([f"{exp['title']} at {exp['company']} ({exp['start']}-{exp['end']}): {exp['description']}" for exp in st.session_state.resume_data["experience"]])}
-            
-            Education:
-            {chr(10).join([f"{edu['degree']}, {edu['institution']} ({edu['year']})" for edu in st.session_state.resume_data["education"]])}
-            
-            Skills:
-            {', '.join(st.session_state.resume_data["skills"])}
-            """
-            st.session_state.resume_text = resume_text
-    
-    # Resume Analysis for Selected Job
-    if st.session_state.selected_job and 'resume_text' in st.session_state:
-        st.markdown("### 🔍 Resume Analysis for Selected Job")
-        if st.button("Analyze Resume for This Job"):
-            with st.spinner('Analyzing resume...'):
-                analysis = analyze_resume_for_job(
-                    st.session_state.resume_text,
-                    st.session_state.selected_job.get('description', '')
-                )
-                st.markdown(f"""
-                    <div class="resume-section">
-                        <h4>Resume Analysis</h4>
-                        <div>{analysis.replace('\n', '<br>')}</div>
-                    </div>
-                """, unsafe_allow_html=True)
 
 with tab4:
     # --- Notifications Center ---
@@ -1045,6 +1097,10 @@ with tab5:
 # --- Footer Section ---
 st.markdown("""
     <div class="footer">
-        <p>JobFinder Pro+ • Powered by SerpAPI and Hugging Face • © 2023 All Rights Reserved</p>
+        <p>JobFinder Pro+ • Powered by Tesseract • © 2025 All Rights Reserved</p>
     </div>
 """, unsafe_allow_html=True)
+
+
+
+

@@ -47,28 +47,41 @@ import time
 import traceback
 # ... (your other imports)
 
+# ===== SECRETS CONFIGURATION ===== (PUT THIS RIGHT AFTER IMPORTS)
+try:
+    # Try Streamlit secrets first (for production)
+    HF_TOKEN = st.secrets["HF_TOKEN"]
+    SERPAPI_KEY = st.secrets["SERPAPI_KEY"]  # Fixed typo from SERRAPI_KEY
+    st.success("Using Streamlit secrets configuration")
+except (KeyError, FileNotFoundError) as e:
+    # Fallback to .env for local development
+    load_dotenv()
+    HF_TOKEN = os.getenv("HF_TOKEN")
+    SERPAPI_KEY = os.getenv("SERPAPI_KEY")
+    st.warning(f"Running in local mode - using .env file. Error: {str(e)}")
 
-
-# +++ ADD DEBUG CODE HERE +++
-print("\n=== DEBUGGING TOKEN LOADING ===")
-load_dotenv()
-print("1. .env file exists:", os.path.exists('.env'))
-print("2. HF_TOKEN exists in environment:", bool(st.secrets["HF_TOKEN"]))
-print("3. Current directory:", os.getcwd())
-print("4. Files in directory:", os.listdir())
-print("==============================\n")
-
-# --- Rest of your existing code ---
-API_KEY = st.secrets["SERPAPI_KEY"]
-HF_TOKEN = os.getenv("HF_TOKEN")  # This is where you normally load the token
-
+# Validate tokens
 if not HF_TOKEN:
     st.error("""
-    ❌ Hugging Face token not found. Please:
-    1. Get token from https://huggingface.co/settings/tokens
-    2. Add to .env file as: HF_TOKEN=your_token_here
-    3. Ensure .env is in the same folder as your script
+    Hugging Face token not found. Please configure either:
+    
+    For Streamlit Sharing:
+    1. Add to Secrets in your app settings
+    2. Format as: 
+       HF_TOKEN='your_token_here'
+       SERPAPI_KEY='your_key_here'
+    
+    For Local Development:
+    1. Create .env file
+    2. Add:
+       HF_TOKEN=your_token_here
+       SERPAPI_KEY=your_key_here
     """)
+    st.stop()
+
+if not SERPAPI_KEY:
+    st.error("SERPAPI key is required for job searches")
+    st.stop()
 
 
 show_animated_logo()

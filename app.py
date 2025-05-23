@@ -1,4 +1,12 @@
 import streamlit as st
+# --- Page Configuration ---
+st.set_page_config(
+    page_title="JobFinder Pro+",
+    page_icon="🔍",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 import requests
 import pandas as pd
 import os
@@ -31,10 +39,15 @@ from logo import show_animated_logo
 import streamlit as st
 import requests
 import pandas as pd
+<<<<<<< HEAD
+=======
+from dotenv import load_dotenv
+>>>>>>> d4befbeb234d8af9de86f150c0377b3adb4d63e4
 import os
 import time
 import traceback
 # ... (your other imports)
+<<<<<<< HEAD
 
 # +++ ADD DEBUG CODE HERE +++
 print("\n=== DEBUGGING SECRETS ===")
@@ -53,21 +66,63 @@ if not HF_TOKEN:
     2. Add to .env file as: HF_TOKEN=your_token_here
     3. Ensure .env is in the same folder as your script
     """)
+=======
+>>>>>>> d4befbeb234d8af9de86f150c0377b3adb4d63e4
 
-# --- Page Configuration ---
-st.set_page_config(
-    page_title="JobFinder Pro+",
-    page_icon="🔍",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# ===== SECRETS CONFIGURATION ===== (PUT THIS RIGHT AFTER IMPORTS)
+try:
+    # Try Streamlit secrets first (for production)
+    HF_TOKEN = st.secrets["HF_TOKEN"]
+    SERPAPI_KEY = st.secrets["SERPAPI_KEY"]  # Fixed typo from SERRAPI_KEY
+    st.success("Using Streamlit secrets configuration")
+except (KeyError, FileNotFoundError) as e:
+    # Fallback to .env for local development
+    load_dotenv()
+    HF_TOKEN = os.getenv("HF_TOKEN")
+    SERPAPI_KEY = os.getenv("SERPAPI_KEY")
+    st.warning(f"Running in local mode - using .env file. Error: {str(e)}")
 
+# Validate tokens
+if not HF_TOKEN:
+    st.error("""
+    Hugging Face token not found. Please configure either:
+    
+    For Streamlit Sharing:
+    1. Add to Secrets in your app settings
+    2. Format as: 
+       HF_TOKEN='your_token_here'
+       SERPAPI_KEY='your_key_here'
+    
+    For Local Development:
+    1. Create .env file
+    2. Add:
+       HF_TOKEN=your_token_here
+       SERPAPI_KEY=your_key_here
+    """)
+    st.stop()
+
+if not SERPAPI_KEY:
+    st.error("SERPAPI key is required for job searches")
+    st.stop()
+
+<<<<<<< HEAD
 show_animated_logo()
 # --- Environment Setup ---
 try:
     # Load secrets
     API_KEY = st.secrets.get("SERPAPI_KEY")
     HF_TOKEN = st.secrets.get("HF_TOKEN")
+=======
+
+show_animated_logo()
+# --- Environment Setup ---
+try:
+    # Load environment variables
+    if not load_dotenv():
+        st.error("⚠️ Could not load .env file")
+    API_KEY = st.secrets["SERPAPI_KEY"]
+    HF_TOKEN = st.secrets["HF_TOKEN"]  # Changed from OPENAI_KEY
+>>>>>>> d4befbeb234d8af9de86f150c0377b3adb4d63e4
     
     if not API_KEY:
         st.error("❌ SERPAPI_KEY not found in secrets")
@@ -687,7 +742,7 @@ with tab1:
                 )
 
 with tab2:
-    st.markdown("### 🤖 Career Assistant - TESSERACT")
+    st.markdown("### 🤖AI Assistant - TESSERACT")
     
     # Initialize the chatbot in session state if not exists
     if "chat_history" not in st.session_state:

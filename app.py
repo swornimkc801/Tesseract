@@ -35,19 +35,12 @@ from huggingface_hub import InferenceClient
 from saved_jobs import SavedJobsManager
 from resume_builder import ProfessionalResumeBuilder
 from logo import show_animated_logo
-# --- Existing Imports ---
 import streamlit as st
 import requests
 import pandas as pd
-<<<<<<< HEAD
-=======
-from dotenv import load_dotenv
->>>>>>> d4befbeb234d8af9de86f150c0377b3adb4d63e4
 import os
 import time
 import traceback
-# ... (your other imports)
-<<<<<<< HEAD
 
 # +++ ADD DEBUG CODE HERE +++
 print("\n=== DEBUGGING SECRETS ===")
@@ -66,72 +59,41 @@ if not HF_TOKEN:
     2. Add to .env file as: HF_TOKEN=your_token_here
     3. Ensure .env is in the same folder as your script
     """)
-=======
->>>>>>> d4befbeb234d8af9de86f150c0377b3adb4d63e4
 
 # ===== SECRETS CONFIGURATION ===== (PUT THIS RIGHT AFTER IMPORTS)
 try:
-    # Try Streamlit secrets first (for production)
+    # Directly access Streamlit secrets (no .env fallback)
+    SERPAPI_KEY = st.secrets["SERPAPI_KEY"]
     HF_TOKEN = st.secrets["HF_TOKEN"]
-    SERPAPI_KEY = st.secrets["SERPAPI_KEY"]  # Fixed typo from SERRAPI_KEY
-    st.success("Using Streamlit secrets configuration")
-except (KeyError, FileNotFoundError) as e:
-    # Fallback to .env for local development
-    load_dotenv()
-    HF_TOKEN = os.getenv("HF_TOKEN")
-    SERPAPI_KEY = os.getenv("SERPAPI_KEY")
-    st.warning(f"Running in local mode - using .env file. Error: {str(e)}")
+    
+    # Validate the secrets aren't empty
+    if not SERPAPI_KEY:
+        raise ValueError("SERPAPI_KEY is empty in secrets")
+    if not HF_TOKEN:
+        raise ValueError("HF_TOKEN is empty in secrets")
+    
+    st.success("🔐 Secrets loaded successfully")
 
-# Validate tokens
-if not HF_TOKEN:
-    st.error("""
-    Hugging Face token not found. Please configure either:
+except KeyError as e:
+    st.error(f"""
+    🔍 Missing required secret: {e}
     
-    For Streamlit Sharing:
-    1. Add to Secrets in your app settings
-    2. Format as: 
-       HF_TOKEN='your_token_here'
-       SERPAPI_KEY='your_key_here'
-    
-    For Local Development:
-    1. Create .env file
-    2. Add:
-       HF_TOKEN=your_token_here
-       SERPAPI_KEY=your_key_here
+    For Streamlit Cloud deployment:
+    1. Go to your app settings
+    2. Click 'Secrets'
+    3. Add these values:
+       SERPAPI_KEY='your_api_key_here'
+       HF_TOKEN='your_hf_token_here'
     """)
     st.stop()
 
-if not SERPAPI_KEY:
-    st.error("SERPAPI key is required for job searches")
+except Exception as e:
+    st.error(f"""
+    ⚠️ Failed to load secrets: {str(e)}
+    """)
     st.stop()
 
-<<<<<<< HEAD
 show_animated_logo()
-# --- Environment Setup ---
-try:
-    # Load secrets
-    API_KEY = st.secrets.get("SERPAPI_KEY")
-    HF_TOKEN = st.secrets.get("HF_TOKEN")
-=======
-
-show_animated_logo()
-# --- Environment Setup ---
-try:
-    # Load environment variables
-    if not load_dotenv():
-        st.error("⚠️ Could not load .env file")
-    API_KEY = st.secrets["SERPAPI_KEY"]
-    HF_TOKEN = st.secrets["HF_TOKEN"]  # Changed from OPENAI_KEY
->>>>>>> d4befbeb234d8af9de86f150c0377b3adb4d63e4
-    
-    if not API_KEY:
-        st.error("❌ SERPAPI_KEY not found in secrets")
-    if not HF_TOKEN:
-        st.warning("ℹ️ HF_TOKEN not found, some features may be limited")
-except Exception as e:
-    st.error(f"🚨 Critical Error: {str(e)}")
-    st.code(traceback.format_exc())
-    st.stop()  # Stop execution if env setup fails
 
 # --- AI Model Initialization ---
 @st.cache_resource

@@ -1,7 +1,6 @@
 import streamlit as st
 import requests
 import pandas as pd
-from dotenv import load_dotenv
 import os
 import time
 import traceback
@@ -25,7 +24,6 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from transformers import pipeline
 from huggingface_hub import InferenceClient
-from dotenv import load_dotenv
 from saved_jobs import SavedJobsManager
 from resume_builder import ProfessionalResumeBuilder
 from logo import show_animated_logo
@@ -33,24 +31,20 @@ from logo import show_animated_logo
 import streamlit as st
 import requests
 import pandas as pd
-from dotenv import load_dotenv
 import os
 import time
 import traceback
 # ... (your other imports)
 
 # +++ ADD DEBUG CODE HERE +++
-print("\n=== DEBUGGING TOKEN LOADING ===")
-load_dotenv()
-print("1. .env file exists:", os.path.exists('.env'))
-print("2. HF_TOKEN exists in environment:", bool(os.getenv("HF_TOKEN")))
-print("3. Current directory:", os.getcwd())
-print("4. Files in directory:", os.listdir())
-print("==============================\n")
+print("\n=== DEBUGGING SECRETS ===")
+print("Secrets available:", list(st.secrets.keys()))
+print("SERPAPI_KEY exists:", "SERPAPI_KEY" in st.secrets)
+print("HF_TOKEN exists:", "HF_TOKEN" in st.secrets)
 
 # --- Rest of your existing code ---
-API_KEY = os.getenv("SERPAPI_KEY")
-HF_TOKEN = os.getenv("HF_TOKEN")  # This is where you normally load the token
+API_KEY = st.secrets["SERPAPI_KEY"]
+HF_TOKEN = st.secrets["HF_TOKEN"]
 
 if not HF_TOKEN:
     st.error("""
@@ -71,17 +65,14 @@ st.set_page_config(
 show_animated_logo()
 # --- Environment Setup ---
 try:
-    # Load environment variables
-    if not load_dotenv():
-        st.error("⚠️ Could not load .env file")
-    API_KEY = os.getenv("SERPAPI_KEY")
-    HF_TOKEN = os.getenv("HF_TOKEN")  # Changed from OPENAI_KEY
+    # Load secrets
+    API_KEY = st.secrets.get("SERPAPI_KEY")
+    HF_TOKEN = st.secrets.get("HF_TOKEN")
     
     if not API_KEY:
-        st.error("❌ SERPAPI_KEY not found in .env file")
+        st.error("❌ SERPAPI_KEY not found in secrets")
     if not HF_TOKEN:
         st.warning("ℹ️ HF_TOKEN not found, some features may be limited")
-    
 except Exception as e:
     st.error(f"🚨 Critical Error: {str(e)}")
     st.code(traceback.format_exc())

@@ -1,10 +1,20 @@
-import streamlit as st
-import pandas as pd
+import os
+from dotenv import load_dotenv
+from huggingface_hub import HfApi, InferenceClient
 
-st.title("Data Explorer")
-uploaded_file = st.file_uploader("Upload a CSV")
+load_dotenv()
+token = os.getenv("HF_TOKEN")
 
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
-    st.write("Data Preview:")
-    st.dataframe(df.head())
+# Test basic API connection
+try:
+    api = HfApi()
+    user_info = api.whoami(token=token)
+    print(f"✅ Basic connection success! User: {user_info['name']}")
+    
+    # Test inference endpoint
+    client = InferenceClient(token=token)
+    test_response = client.text_generation("Explain software engineering in 1 sentence", max_new_tokens=50)
+    print(f"✅ Inference test success! Response: {test_response}")
+    
+except Exception as e:
+    print(f"❌ Failed: {str(e)}")
